@@ -119,26 +119,25 @@
     #panel{
       top:auto; right:0; left:0; bottom:0; width:auto;
       max-height:none;
-      height:88dvh;              /* full height; we slide it down via transform */
+      height: var(--sheet-height, 55dvh);   /* we animate HEIGHT, so grip stays pinned to top edge */
       border-radius:20px 20px 0 0;
       border-bottom:none;
-      transform: translateY(var(--sheet-offset, 45dvh));
-      transition: transform .28s cubic-bezier(.22,.61,.36,1);
-      will-change: transform;
-      touch-action:none;         /* handle drag is managed manually */
+      transition: height .28s cubic-bezier(.22,.61,.36,1);
+      will-change: height;
+      touch-action:none;
     }
-    #panel.dragging{transition:none;}   /* follow the finger 1:1 while dragging */
+    #panel.dragging{transition:none;}
 
     #sheet-handle{
-      display:block; width:40px; height:5px; border-radius:3px;
-      background:rgba(255,255,255,0.25);
-      margin:10px auto 2px;
+      display:block; width:44px; height:5px; border-radius:3px;
+      background:rgba(255,255,255,0.4);
+      margin:12px auto 2px;
       flex:0 0 auto;
     }
-    #sheet-grip{padding:2px 0 6px; flex:0 0 auto; cursor:grab;}
-    #panel-header{padding:6px 22px 14px;}
+    /* generous grip hit-area so it's always easy to grab */
+    #sheet-grip{padding:6px 0 10px; flex:0 0 auto; cursor:grab; touch-action:none;}
+    #panel-header{padding:4px 22px 14px;}
 
-    /* the options list only scrolls internally once the sheet is at full height */
     #panel-scroll{touch-action:pan-y;}
 
     /* bigger touch targets on mobile */
@@ -150,7 +149,12 @@
     .switch.on::after{transform:translateX(18px);}
     #cta{padding:14px; font-size:14px;}
 
-    #recenter{top:auto; bottom:calc(45dvh + 16px); transition: bottom .28s cubic-bezier(.22,.61,.36,1);}
+    #recenter{top:auto; bottom:calc(var(--sheet-height, 55dvh) + 16px); transition: bottom .28s cubic-bezier(.22,.61,.36,1);}
+
+    /* at the smallest stop, hide the scrolling options + header so only grip + summary + CTA show */
+    #panel.peek #panel-scroll{display:none;}
+    #panel.peek #panel-header{display:none;}
+    #panel.peek #summary{border-top:none;}
   }
 </style>
 </head>
@@ -546,81 +550,91 @@ resize();
 animate();
 window.addEventListener('resize', resize);
 
-// ---------- mobile bottom sheet (3 stops: peek / mid / full) ----------
+// ---------- mobile bottom sheet (height-based; grip always on screen) ----------
 const panel = document.getElementById('panel');
 const grip = document.getElementById('sheet-grip');
 const recenterBtnEl = document.getElementById('recenter');
 
-// offsets are how far DOWN the sheet is translated from full-open (0 = full height visible)
-function sheetStops(){
-  const vh = window.innerHeight;
-  return {
-    full: Math.round(vh * 0.12),  // nearly full height
-    mid:  Math.round(vh * 0.45),  // default — matches CSS initial
-    peek: Math.round(vh * 0.78)   // just handle + CTA peeking
-  };
+// TUNABLE: sheet heights as fraction of viewport. Peek stays tall enough that
+// the grip + "Your Selection" + Request-a-Quote button remain visible & grabbable.
+const SHEET = { full: 0.90, mid: 0.55, peek: 0.34 };
+
+function vh(){ return window.innerHeight; }
+function stopHeights(){
+  return { full: Math.round(vh()*SHEET.full), mid: Math.round(vh()*SHEET.mid), peek: Math.round(vh()*SHEET.peek) };
 }
-let currentOffset = null;
+let currentHeight = null;
 
 function isMobile(){ return window.matchMedia('(max-width: 760px)').matches; }
 
-function setSheet(offset, animateIt=true){
-  currentOffset = offset;
+function setSheet(height, animateIt=true){
+  currentHeight = height;
   panel.classList.toggle('dragging', !animateIt);
-  panel.style.setProperty('--sheet-offset', offset + 'px');
-  // keep the recenter button riding just above the sheet
-  recenterBtnEl.style.bottom = (window.innerHeight - offset + 16) + 'px';
+  panel.style.setProperty('--sheet-height', height + 'px');
+  recenterBtnEl.style.bottom = (height + 16) + 'px';
+  // compact mode when at/near the smallest stop, so only grip + CTA are shown
+  const s = stopHeights();
+  panel.classList.toggle('peek', height <= s.peek + 12);
 }
 
-function snapToNearest(offset){
-  const s = sheetStops();
-  const stops = [s.full, s.mid, s.peek];
+function snapToNearest(height){
+  const s = stopHeights();
+  const stops = [s.peek, s.mid, s.full];
   let nearest = stops[0];
-  for(const st of stops){ if(Math.abs(st-offset) < Math.abs(nearest-offset)) nearest = st; }
+  for(const st of stops){ if(Math.abs(st-height) < Math.abs(nearest-height)) nearest = st; }
   setSheet(nearest, true);
 }
 
+// drop the sheet to peek (still grabbable) when the user grabs the cabinet
 function collapseSheetOnInteract(){
   if(!isMobile()) return;
-  const s = sheetStops();
-  // if the sheet is above peek, drop it to peek so the cabinet is unobstructed
-  if(currentOffset !== null && currentOffset < s.peek - 10){ setSheet(s.peek, true); }
+  const s = stopHeights();
+  if(currentHeight !== null && currentHeight > s.peek + 10){ setSheet(s.peek, true); }
 }
 
-// drag handling on the grip
-let sheetDragging = false, sheetStartY = 0, sheetStartOffset = 0;
+// drag on the grip: dragging DOWN shrinks the sheet, UP grows it
+let sheetDragging = false, sheetStartY = 0, sheetStartHeight = 0, sheetMoved = false;
 grip.addEventListener('pointerdown', e=>{
   if(!isMobile()) return;
-  sheetDragging = true;
+  sheetDragging = true; sheetMoved = false;
   grip.setPointerCapture(e.pointerId);
   sheetStartY = e.clientY;
-  sheetStartOffset = currentOffset ?? sheetStops().mid;
+  sheetStartHeight = currentHeight ?? stopHeights().mid;
   panel.classList.add('dragging');
+  e.preventDefault();
 });
 grip.addEventListener('pointermove', e=>{
   if(!sheetDragging) return;
-  const s = sheetStops();
-  let next = sheetStartOffset + (e.clientY - sheetStartY);
-  next = Math.max(s.full, Math.min(s.peek, next)); // clamp within range
+  if(Math.abs(e.clientY - sheetStartY) > 4) sheetMoved = true;
+  const s = stopHeights();
+  let next = sheetStartHeight - (e.clientY - sheetStartY); // finger up (dy negative) → taller
+  next = Math.max(s.peek, Math.min(s.full, next));
   setSheet(next, false);
 });
-function endSheetDrag(e){
+function endSheetDrag(){
   if(!sheetDragging) return;
   sheetDragging = false;
-  snapToNearest(currentOffset);
+  snapToNearest(currentHeight);
 }
 grip.addEventListener('pointerup', endSheetDrag);
 grip.addEventListener('pointercancel', endSheetDrag);
 
-// initialize sheet position on mobile
+// tap on the grip cycles up a stop — but only when it wasn't actually a drag
+grip.addEventListener('click', ()=>{
+  if(!isMobile() || sheetMoved) return;
+  const s = stopHeights();
+  if(currentHeight <= s.peek + 10) setSheet(s.mid, true);
+  else if(currentHeight <= s.mid + 10) setSheet(s.full, true);
+  else setSheet(s.peek, true);
+});
+
 function initSheet(){
   if(isMobile()){
-    if(currentOffset === null) setSheet(sheetStops().mid, false);
-    else setSheet(currentOffset, false);
+    setSheet(currentHeight ?? stopHeights().mid, false);
     requestAnimationFrame(()=> panel.classList.remove('dragging'));
   } else {
-    panel.style.removeProperty('--sheet-offset');
-    currentOffset = null;
+    panel.style.removeProperty('--sheet-height');
+    currentHeight = null;
   }
 }
 initSheet();
