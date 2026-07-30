@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Cabinet Configurator</title>
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="description" content="Explore finishes, door styles, and hardware on a custom cabinet in 3D.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -27,7 +27,19 @@
   #hint{position:absolute; left:24px; bottom:20px; font-size:12px; letter-spacing:.04em; color:var(--text-muted); text-transform:uppercase; pointer-events:none;}
   #title{position:absolute; left:24px; top:22px; font-family:'Fraunces', serif; font-size:15px; letter-spacing:.02em; color:var(--text-muted);}
   #title b{color:var(--text); font-weight:600;}
-  #poc-badge{position:absolute; left:24px; top:52px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted); border:1px solid var(--panel-line); padding:5px 9px; border-radius:4px; background:rgba(0,0,0,0.15);}
+
+  #recenter{
+    position:absolute; right:344px; top:20px;
+    display:none; align-items:center; gap:6px;
+    padding:8px 12px; border-radius:20px;
+    background:rgba(24,20,15,0.55);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    border:1px solid var(--panel-line);
+    color:var(--text); font-size:12px; font-family:'Inter',sans-serif;
+    cursor:pointer; z-index:5;
+  }
+  #recenter svg{width:14px; height:14px;}
 
   #panel{
     position:absolute; top:20px; right:20px; bottom:20px; width:308px;
@@ -97,10 +109,48 @@
 
   #sheet-handle{display:none;}
 
+  /* canvas owns its own touch gestures; never let the page pan/zoom over it */
+  #viewer, #viewer canvas{touch-action:none;}
+
   @media (max-width: 760px){
-    #panel{top:auto; right:0; bottom:0; left:0; width:auto; max-height:62vh; border-radius:20px 20px 0 0; border-bottom:none;}
-    #sheet-handle{display:block; width:36px; height:4px; border-radius:3px; background:rgba(255,255,255,0.2); margin:10px auto 0;}
-    #panel-header{padding-top:10px;}
+    #app{height:100dvh;}
+    #hint{display:none;}
+
+    #panel{
+      top:auto; right:0; left:0; bottom:0; width:auto;
+      max-height:none;
+      height:88dvh;              /* full height; we slide it down via transform */
+      border-radius:20px 20px 0 0;
+      border-bottom:none;
+      transform: translateY(var(--sheet-offset, 45dvh));
+      transition: transform .28s cubic-bezier(.22,.61,.36,1);
+      will-change: transform;
+      touch-action:none;         /* handle drag is managed manually */
+    }
+    #panel.dragging{transition:none;}   /* follow the finger 1:1 while dragging */
+
+    #sheet-handle{
+      display:block; width:40px; height:5px; border-radius:3px;
+      background:rgba(255,255,255,0.25);
+      margin:10px auto 2px;
+      flex:0 0 auto;
+    }
+    #sheet-grip{padding:2px 0 6px; flex:0 0 auto; cursor:grab;}
+    #panel-header{padding:6px 22px 14px;}
+
+    /* the options list only scrolls internally once the sheet is at full height */
+    #panel-scroll{touch-action:pan-y;}
+
+    /* bigger touch targets on mobile */
+    .pill{padding:11px 15px; font-size:13.5px;}
+    .swatch{width:56px; height:56px;}
+    .swatch-label{width:56px; font-size:10px;}
+    .switch{width:44px; height:26px;}
+    .switch::after{width:20px; height:20px;}
+    .switch.on::after{transform:translateX(18px);}
+    #cta{padding:14px; font-size:14px;}
+
+    #recenter{top:auto; bottom:calc(45dvh + 16px); transition: bottom .28s cubic-bezier(.22,.61,.36,1);}
   }
 </style>
 </head>
@@ -108,13 +158,16 @@
 <div id="app">
   <div id="viewer">
     <div id="title">Cabinet — <b>Base Cabinet</b></div>
-    <div id="poc-badge">Proof of concept</div>
+    <button id="recenter" aria-label="Recenter view">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="4"/></svg>
+      Recenter
+    </button>
     <canvas id="canvas"></canvas>
-    <div id="hint">Drag to rotate · scroll to zoom</div>
+    <div id="hint">Drag to rotate · scroll to zoom · shift-drag or two-finger to pan</div>
   </div>
 
   <div id="panel">
-    <div id="sheet-handle"></div>
+    <div id="sheet-grip"><div id="sheet-handle"></div></div>
     <div id="panel-header">
       <h1>Configure</h1>
       <p class="sub">Live preview only — production tool will include the full catalog of shapes, species, finishes, and hardware.</p>
@@ -382,9 +435,9 @@ function buildCabinet(){
 
 buildCabinet();
 
-let radius = 3, theta = Math.PI*0.28, phi = Math.PI*0.42;
-const target = new THREE.Vector3(0, 0.15, 0);
-let dragging = false, lastX=0, lastY=0;
+const DEFAULT_VIEW = {radius:3, theta:Math.PI*0.28, phi:Math.PI*0.42, tx:0, ty:0.15, tz:0};
+let radius = DEFAULT_VIEW.radius, theta = DEFAULT_VIEW.theta, phi = DEFAULT_VIEW.phi;
+const target = new THREE.Vector3(DEFAULT_VIEW.tx, DEFAULT_VIEW.ty, DEFAULT_VIEW.tz);
 
 function updateCamera(){
   phi = Math.max(0.2, Math.min(Math.PI/2 - 0.02, phi));
@@ -397,25 +450,181 @@ function updateCamera(){
   camera.lookAt(target);
 }
 
-canvas.addEventListener('pointerdown', e=>{ dragging = true; lastX = e.clientX; lastY = e.clientY; canvas.setPointerCapture(e.pointerId); });
-canvas.addEventListener('pointerup', ()=> dragging=false);
-canvas.addEventListener('pointerleave', ()=> dragging=false);
-canvas.addEventListener('pointermove', e=>{
-  if(!dragging) return;
-  const dx = e.clientX - lastX, dy = e.clientY - lastY;
-  lastX = e.clientX; lastY = e.clientY;
-  theta -= dx*0.008;
-  phi -= dy*0.008;
+// pan moves the look-at target within the camera's local right/up plane
+function pan(dxPx, dyPx){
+  const panScale = radius * 0.0018;
+  const right = new THREE.Vector3(); const up = new THREE.Vector3();
+  camera.matrix.extractBasis(right, up, new THREE.Vector3());
+  target.addScaledVector(right, -dxPx * panScale);
+  target.addScaledVector(up,    dyPx * panScale);
+}
+
+function recenter(){
+  radius = DEFAULT_VIEW.radius; theta = DEFAULT_VIEW.theta; phi = DEFAULT_VIEW.phi;
+  target.set(DEFAULT_VIEW.tx, DEFAULT_VIEW.ty, DEFAULT_VIEW.tz);
   updateCamera();
+}
+
+// --- pointer handling: 1 pointer = rotate, 2 pointers = pan + pinch-zoom ---
+const activePointers = new Map();
+let lastSingle = null, lastPinchDist = 0, lastPinchMid = null;
+
+function pointersMid(){
+  const pts = [...activePointers.values()];
+  return {x:(pts[0].x+pts[1].x)/2, y:(pts[0].y+pts[1].y)/2};
+}
+function pointersDist(){
+  const pts = [...activePointers.values()];
+  return Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y);
+}
+
+canvas.addEventListener('pointerdown', e=>{
+  canvas.setPointerCapture(e.pointerId);
+  activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  if(activePointers.size === 1){
+    lastSingle = {x:e.clientX, y:e.clientY};
+    collapseSheetOnInteract(); // drop the sheet out of the way on first grab (mobile)
+  } else if(activePointers.size === 2){
+    lastPinchDist = pointersDist();
+    lastPinchMid = pointersMid();
+    lastSingle = null;
+  }
 });
-canvas.addEventListener('wheel', e=>{ e.preventDefault(); radius += e.deltaY*0.0015*radius; updateCamera(); }, {passive:false});
+
+canvas.addEventListener('pointermove', e=>{
+  if(!activePointers.has(e.pointerId)) return;
+  activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+
+  if(activePointers.size === 1 && lastSingle){
+    const dx = e.clientX - lastSingle.x, dy = e.clientY - lastSingle.y;
+    lastSingle = {x:e.clientX, y:e.clientY};
+    if(e.shiftKey){          // desktop: shift-drag pans
+      pan(dx, dy);
+      showRecenter();
+    } else {
+      theta -= dx*0.008;
+      phi   -= dy*0.008;
+    }
+    updateCamera();
+  } else if(activePointers.size === 2){
+    const dist = pointersDist(), mid = pointersMid();
+    // pinch → zoom
+    if(lastPinchDist){ radius *= lastPinchDist / dist; }
+    // two-finger drag → pan
+    if(lastPinchMid){ pan(mid.x - lastPinchMid.x, mid.y - lastPinchMid.y); }
+    lastPinchDist = dist; lastPinchMid = mid;
+    updateCamera();
+    showRecenter();
+  }
+});
+
+function endPointer(e){
+  activePointers.delete(e.pointerId);
+  if(activePointers.size === 1){
+    const p = [...activePointers.values()][0];
+    lastSingle = {x:p.x, y:p.y};
+    lastPinchDist = 0; lastPinchMid = null;
+  } else if(activePointers.size === 0){
+    lastSingle = null; lastPinchDist = 0; lastPinchMid = null;
+  }
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+
+// desktop: wheel zooms; shift+drag pans (handled via the single-pointer path staying rotate otherwise)
+canvas.addEventListener('wheel', e=>{ e.preventDefault(); radius += e.deltaY*0.0015*radius; updateCamera(); showRecenter(); }, {passive:false});
 
 updateCamera();
+
+// recenter button wiring + reveal-once-moved
+const recenterBtn = document.getElementById('recenter');
+recenterBtn.addEventListener('click', ()=>{ recenter(); });
+function showRecenter(){ recenterBtn.style.display = 'inline-flex'; }
 
 function animate(){ requestAnimationFrame(animate); renderer.render(scene, camera); }
 resize();
 animate();
 window.addEventListener('resize', resize);
+
+// ---------- mobile bottom sheet (3 stops: peek / mid / full) ----------
+const panel = document.getElementById('panel');
+const grip = document.getElementById('sheet-grip');
+const recenterBtnEl = document.getElementById('recenter');
+
+// offsets are how far DOWN the sheet is translated from full-open (0 = full height visible)
+function sheetStops(){
+  const vh = window.innerHeight;
+  return {
+    full: Math.round(vh * 0.12),  // nearly full height
+    mid:  Math.round(vh * 0.45),  // default — matches CSS initial
+    peek: Math.round(vh * 0.78)   // just handle + CTA peeking
+  };
+}
+let currentOffset = null;
+
+function isMobile(){ return window.matchMedia('(max-width: 760px)').matches; }
+
+function setSheet(offset, animateIt=true){
+  currentOffset = offset;
+  panel.classList.toggle('dragging', !animateIt);
+  panel.style.setProperty('--sheet-offset', offset + 'px');
+  // keep the recenter button riding just above the sheet
+  recenterBtnEl.style.bottom = (window.innerHeight - offset + 16) + 'px';
+}
+
+function snapToNearest(offset){
+  const s = sheetStops();
+  const stops = [s.full, s.mid, s.peek];
+  let nearest = stops[0];
+  for(const st of stops){ if(Math.abs(st-offset) < Math.abs(nearest-offset)) nearest = st; }
+  setSheet(nearest, true);
+}
+
+function collapseSheetOnInteract(){
+  if(!isMobile()) return;
+  const s = sheetStops();
+  // if the sheet is above peek, drop it to peek so the cabinet is unobstructed
+  if(currentOffset !== null && currentOffset < s.peek - 10){ setSheet(s.peek, true); }
+}
+
+// drag handling on the grip
+let sheetDragging = false, sheetStartY = 0, sheetStartOffset = 0;
+grip.addEventListener('pointerdown', e=>{
+  if(!isMobile()) return;
+  sheetDragging = true;
+  grip.setPointerCapture(e.pointerId);
+  sheetStartY = e.clientY;
+  sheetStartOffset = currentOffset ?? sheetStops().mid;
+  panel.classList.add('dragging');
+});
+grip.addEventListener('pointermove', e=>{
+  if(!sheetDragging) return;
+  const s = sheetStops();
+  let next = sheetStartOffset + (e.clientY - sheetStartY);
+  next = Math.max(s.full, Math.min(s.peek, next)); // clamp within range
+  setSheet(next, false);
+});
+function endSheetDrag(e){
+  if(!sheetDragging) return;
+  sheetDragging = false;
+  snapToNearest(currentOffset);
+}
+grip.addEventListener('pointerup', endSheetDrag);
+grip.addEventListener('pointercancel', endSheetDrag);
+
+// initialize sheet position on mobile
+function initSheet(){
+  if(isMobile()){
+    if(currentOffset === null) setSheet(sheetStops().mid, false);
+    else setSheet(currentOffset, false);
+    requestAnimationFrame(()=> panel.classList.remove('dragging'));
+  } else {
+    panel.style.removeProperty('--sheet-offset');
+    currentOffset = null;
+  }
+}
+initSheet();
+window.addEventListener('resize', initSheet);
 
 const modelWrap = document.getElementById('model-pills');
 Object.entries(MODELS).forEach(([key,m])=>{
